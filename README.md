@@ -43,7 +43,75 @@ curl http://localhost:8787/api/db
 2. 在 Vercel 项目设置里添加环境变量 `DATABASE_URL`（Production / Preview / Development）
 3. `vercel --prod` 部署
 
-若要挂到主域名下，在 `incremental.icu` 前端项目里加 rewrite 转发 `/api/*` 到本服务，这样浏览器视角同源，无需配置 CORS。
+若要挂到主域名下，见下文「前端反代」。
+
+## 前端反代（同源调用）
+
+部署后本服务有自己的域名（如 `https://incremental-api.vercel.app`）。浏览器从前端域名直接请求它属于**跨域**（子域名也算不同源），需要在「配 CORS」和「加反代」之间二选一。推荐**反代**：前端把某个路径前缀服务端转发到本服务，浏览器看到的是同源请求，不需要任何 CORS 配置。
+
+### 先确认前缀没被占用
+
+反代按路径前缀匹配，写之前先确认前缀没被别的服务用掉：
+
+| 项目 | 已占用的前缀 |
+| --- | --- |
+| `incremental`（主站，见其 `vercel.json`） | `/api/*` |
+| `incremental-dashboard`（见其 `next.config.ts`） | `/api/v1/*` |
+
+所以本服务要另选一个独立前缀，例如 `/svc/*`（前缀名随意，不与上表冲突即可）。
+
+### 方式一：vercel.json（任意项目通用）
+
+在前端项目根目录的 `vercel.json` 中加：
+
+```json
+{
+  "rewrites": [
+    {
+      "source": "/svc/:path*",
+      "destination": "https://incremental-api.vercel.app/api/:path*"
+    }
+  ]
+}
+```
+
+`source` 与 `destination` 的路径不必相同，上例把 `incremental.icu/svc/db` 映射到本服务的 `/api/db`。
+
+### 方式二：next.config.ts（Next.js 项目）
+
+Next.js 项目的 rewrites 可以读环境变量，方便开发/生产指向不同后端：
+
+```ts
+async rewrites() {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) return [];
+  return [
+    {
+      source: "/svc/:path*",
+      destination: `${apiUrl}/api/:path*`,
+    },
+  ];
+}
+```
+
+配 `NEXT_PUBLIC_API_URL=https://incremental-api.vercel.app`；本地开发时改成 `http://localhost:8787` 即可。
+
+### 同时存在时的优先级
+
+若一个项目既有 `vercel.json` 又有 `next.config.ts` 的 rewrites，Vercel 先应用 `vercel.json`，命中后不再进入 Next.js 的 rewrites。同一个前缀不要在两边重复定义。
+
+### 验证
+
+```bash
+curl https://incremental.icu/svc/db
+# {"ok":true,"ping":1,"latencyMs":...}
+```
+
+### 注意
+
+- 反代是**服务端转发**，浏览器地址栏不变。所以前端代码里写同源相对路径即可（`fetch('/svc/db')`），不要写完整域名。
+- **确认 API 项目的 Deployment Protection 没有挡住该域名**：若开了 Vercel Authentication，反代请求会被拦下返回登录页。生产域名默认关闭，预览域名默认开启。
+- 如果确实不想用反代，就得改走子域名（如 `api.incremental.icu`），并在 `src/app.ts` 里挂上 Hono 的 `cors()` 中间件，同时把前端域名加进 `origin` 白名单。
 
 ## 注意事项
 
